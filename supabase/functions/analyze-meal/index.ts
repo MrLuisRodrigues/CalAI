@@ -25,34 +25,37 @@ Deno.serve(async (req) => {
     const { imageBase64, mediaType = "image/jpeg" } = await req.json();
     if (!imageBase64) return json({ error: "imageBase64 requerido" }, 400);
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": Deno.env.get("ANTHROPIC_API_KEY")!,
-        "anthropic-version": "2023-06-01",
+    const model = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.5-flash";
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": Deno.env.get("GEMINI_API_KEY")!,
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{
+            role: "user",
+            parts: [
+              { inline_data: { mime_type: mediaType, data: imageBase64 } },
+              { text: "Analiza esta comida y responde solo con el JSON." },
+            ],
+          }],
+          generationConfig: { responseMimeType: "application/json", temperature: 0.2, maxOutputTokens: 4096 },
+        }),
       },
-      body: JSON.stringify({
-        model: Deno.env.get("ANTHROPIC_MODEL") ?? "claude-sonnet-5-5",
-        max_tokens: 1500,
-        system: SYSTEM_PROMPT,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: imageBase64 } },
-            { type: "text", text: "Analiza esta comida y responde solo con el JSON." },
-          ],
-        }],
-      }),
-    });
+    );
 
-    if (!res.ok) return json({ error: `Anthropic ${res.status}: ${await res.text()}` }, 502);
+    if (!res.ok) return json({ error: `Gemini ${res.status}: ${await res.text()}` }, 502);
 
     const data = await res.json();
-    const text: string = data.content?.find((b: { type: string }) => b.type === "text")?.text ?? "";
+    const text: string = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+    if (!text) return json({ error: `Gemini no devolvió contenido (${data.promptFeedback?.blockReason ?? "sin detalle"})` }, 502);
+
     const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1));
-    return json(parsed);
+    return json(JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1)));
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "Error desconocido" }, 500);
   }
